@@ -1,4 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() {
   runApp(const MyApp());
@@ -7,116 +11,181 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'Gym Assistant',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const LandingPage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+/// One result from the native pipeline: MediaPipe landmarks (Kotlin) plus
+/// the exercise analysis computed by backend.py (Python).
+class PoseResult {
+  const PoseResult({
+    required this.landmarkCount,
+    required this.reps,
+    this.stage,
+    this.feedback,
+    this.error,
+    this.angles = const {},
+  });
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
+  final int landmarkCount;
+  final int reps;
+  final String? stage;
+  final String? feedback;
+  final String? error;
+  final Map<String, double> angles;
 
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
+  static const empty = PoseResult(landmarkCount: 0, reps: 0);
 
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  factory PoseResult.fromJson(String payload) {
+    final decoded = jsonDecode(payload) as Map<String, dynamic>;
+    final analysis = decoded['analysis'] as Map<String, dynamic>? ?? const {};
+    final angles = (analysis['angles'] as Map<String, dynamic>? ?? const {})
+        .map((key, value) => MapEntry(key, (value as num).toDouble()));
+    return PoseResult(
+      landmarkCount: (decoded['landmarks'] as List<dynamic>? ?? const []).length,
+      reps: (analysis['reps'] as num?)?.toInt() ?? 0,
+      stage: analysis['stage'] as String?,
+      feedback: analysis['feedback'] as String?,
+      error: analysis['error'] as String?,
+      angles: angles,
+    );
+  }
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class LandingPage extends StatefulWidget {
+  const LandingPage({super.key});
 
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  @override
+  State<LandingPage> createState() => _LandingPageState();
+}
+
+class _LandingPageState extends State<LandingPage> with WidgetsBindingObserver {
+  StreamSubscription<String>? _landmarkSubscription;
+  PoseResult _result = PoseResult.empty;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _landmarkSubscription = NativePoseBridge.landmarks.listen(
+      _applyPayload,
+      onError: (Object error) {
+        if (mounted) setState(() => _error = error.toString());
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _landmarkSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Returning from the native CameraActivity: fetch the latest result.
+    if (state == AppLifecycleState.resumed) {
+      NativePoseBridge.lastResult().then((payload) {
+        if (payload != null) _applyPayload(payload);
+      }).catchError((Object _) {});
+    }
+  }
+
+  void _applyPayload(String payload) {
+    try {
+      final result = PoseResult.fromJson(payload);
+      if (!mounted) return;
+      setState(() => _result = result);
+    } on FormatException catch (exception) {
+      debugPrint('Invalid pose payload: $exception');
+    }
+  }
+
+  Future<void> _openCamera() async {
+    setState(() => _error = null);
+    try {
+      await NativePoseBridge.openCamera();
+    } on PlatformException catch (exception) {
+      if (mounted) {
+        setState(() => _error = exception.message ?? 'Unable to open the camera.');
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
+    final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
+      appBar: AppBar(title: const Text('Gym Assistant')),
       body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
-          children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.accessibility_new, size: 72),
+              const SizedBox(height: 20),
+              Text(
+                'Real-time pose analysis',
+                style: theme.textTheme.headlineSmall,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Open the camera to detect body landmarks with MediaPipe.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 28),
+              FilledButton.icon(
+                onPressed: _openCamera,
+                icon: const Icon(Icons.camera_alt),
+                label: const Text('Activate camera'),
+              ),
+              const SizedBox(height: 20),
+              Text('Landmarks received: ${_result.landmarkCount}'),
+              Text('Squat reps: ${_result.reps}', style: theme.textTheme.titleMedium),
+              if (_result.stage != null) Text('Stage: ${_result.stage}'),
+              if (_result.feedback != null) Text(_result.feedback!),
+              if (_result.angles.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                for (final entry in _result.angles.entries)
+                  Text('${entry.key}: ${entry.value.toStringAsFixed(0)}°',
+                      style: theme.textTheme.bodySmall),
+              ],
+              if (_result.error != null || _error != null) ...[
+                const SizedBox(height: 12),
+                Text(_error ?? _result.error!,
+                    style: TextStyle(color: theme.colorScheme.error)),
+              ],
+            ],
+          ),
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
       ),
     );
   }
+}
+
+class NativePoseBridge {
+  static const _channel = MethodChannel('com.example.gym_assistant/pose');
+  static const _landmarkChannel = EventChannel('com.example.gym_assistant/landmarks');
+
+  static Stream<String> get landmarks =>
+      _landmarkChannel.receiveBroadcastStream().map((event) => event as String);
+
+  static Future<void> openCamera() async {
+    await _channel.invokeMethod<void>('openCamera');
+  }
+
+  static Future<String?> lastResult() => _channel.invokeMethod<String>('getLastResult');
 }
