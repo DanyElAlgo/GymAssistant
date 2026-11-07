@@ -142,6 +142,5 @@ app.*.map.json
 # Widget Preview related
 .widget_preview/
 
-# AI assistant-related
-CLAUDE.md 
-docs/
+docs/GymAssistant C4.drawio.pdf
+/docs/specs
