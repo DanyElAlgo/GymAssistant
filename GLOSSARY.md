@@ -35,3 +35,9 @@ _Avoid_: Hint, alert, message, feedback
 **Rep verdict**:
 The judgement recorded for a finished Rep: correct, or incorrect because of a Postural error.
 _Avoid_: Rep score, rep result
+
+### Progress
+
+**Goal**:
+A measurable target a user or instructor sets for one Exercise over a period, made of a metric, a condition and a target value (e.g. at least 90% correct Reps on the lat pulldown over 4 weeks).
+_Avoid_: Milestone, meta, objective, target
