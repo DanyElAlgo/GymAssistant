@@ -144,3 +144,6 @@ app.*.map.json
 
 docs/GymAssistant C4.drawio.pdf
 /docs/specs
+
+# Raw reference recordings (private, never commit)
+/video_examples/
