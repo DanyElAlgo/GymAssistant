@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rep Detection Prototype</title>
+<style>
+:root{--bg:#fafaf8;--panel:#fff;--ink:#1d1d1b;--muted:#6b6b66;--line:#e3e2dc;--accent:#2f6fde;--accent-soft:#e6eefc;--ok:#1f8a4c;--bad:#c2412d;--rep:rgba(47,111,222,.12)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141413;--panel:#1d1d1b;--ink:#ecebe6;--muted:#9a998f;--line:#33322e;--accent:#7aa5f0;--accent-soft:#1f2a3d;--ok:#5cc58a;--bad:#ee7a66;--rep:rgba(122,165,240,.16)}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1080px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:24px;margin:0 0 4px}h2{font-size:17px;margin:0 0 12px}
+p{margin:0 0 10px}.muted{color:var(--muted)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:16px}
+.question{border-left:3px solid var(--accent);padding-left:12px}
+.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+label{display:block;font-size:13px;color:var(--muted)}
+label b{color:var(--ink);font-weight:600}
+input[type=range]{width:100%;accent-color:var(--accent)}
+select,button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:6px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.done{opacity:.45}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+th{font-weight:600;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+tr.clip{cursor:pointer}tr.clip:hover td{background:var(--accent-soft)}tr.sel td{background:var(--accent-soft)}
+.ok{color:var(--ok);font-weight:600}.bad{color:var(--bad);font-weight:600}
+.summary{font-size:15px;margin-bottom:10px}
+.tablewrap{overflow-x:auto}
+svg{width:100%;height:auto;display:block}
+.state{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:12px}
+.field{border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.field span{display:block;font-size:12px;color:var(--muted)}.field b{font-size:17px}
+.changed{margin-top:10px;padding:8px 10px;border-radius:8px;background:var(--accent-soft);min-height:38px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.tabs button.active{background:var(--accent-soft);border-color:var(--accent)}
+.steps{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.steps button{text-align:left}
+</style>
+</head>
+<body>
+<main>
+<h1>Lat pulldown Rep detection: prototype</h1>
+<p class="muted">Throwaway prototype for the ticket "Lat pulldown Rep detection". Data: MediaPipe Pose (the app's lite model) run over the 16 reference clips.</p>
+
+<div class="card question">
+<h2>The question</h2>
+<p>How should the app tell that one lat pulldown Rep has happened, using only the body landmarks the camera gives it, without counting twice, missing a Rep, or counting someone who is just sitting there?</p>
+<p>The idea being tested: watch <b>how high the wrists are above the shoulder</b> (measured in torso lengths, so it doesn't depend on how far the phone is). A Rep is counted when the arms go from <b>up</b> (above the top line), down to <b>pulled</b> (below the bottom line), and back <b>up</b> again. The gap between the two lines stops small wobbles from being counted.</p>
+</div>
+
+<div class="card">
+<h2>Settings</h2>
+<div class="controls">
+<label>What the app watches
+<select id="signal"><option value="wrist">Wrist height above shoulder</option><option value="elbow">Elbow angle</option></select></label>
+<label>Arms count as <b>up</b> above <b id="topV"></b><input type="range" id="top"></label>
+<label>Arms count as <b>pulled</b> below <b id="botV"></b><input type="range" id="bot"></label>
+<label>Smoothing: average over the last <b id="winV"></b> s<input type="range" id="win" min="0" max="0.5" step="0.05"></label>
+<label>Phone analyses <b id="fpsV"></b> frames per second
+<select id="fps"><option value="1">30</option><option value="2">15</option><option value="3">10</option><option value="6">5</option></select></label>
+</div>
+</div>
+
+<div class="card">
+<h2>Scorecard: all 16 reference clips</h2>
+<p class="summary" id="summary"></p>
+<div class="tablewrap"><table id="score"><thead><tr><th>Camera position</th><th>Clip</th><th>Reps expected</th><th>Reps counted</th><th></th></tr></thead><tbody></tbody></table></div>
+<p class="muted" style="margin-top:8px">The decided camera position is <b>side</b>. Front and oblique are shown for comparison. Click a row to inspect that clip.</p>
+</div>
+
+<div class="card">
+<h2 id="clipTitle"></h2>
+<svg id="chart" viewBox="0 0 1000 270" role="img" aria-label="Signal over time"></svg>
+<div class="row"><input type="range" id="scrub" min="0" style="flex:1;min-width:200px"><span class="muted" id="timeV"></span></div>
+<div class="row">
+<button id="bReset">Start the Set again</button>
+<button id="bFrame">Next reading</button>
+<button id="bSecond">Forward 1 second</button>
+<button id="bNextRep" class="primary">Play to the next Rep</button>
+<button id="bEnd">Play to the end</button>
+</div>
+<div class="state">
+<div class="field"><span>Where the arms are</span><b id="sState"></b></div>
+<div class="field"><span>Reps counted</span><b id="sReps"></b></div>
+<div class="field"><span>Current reading</span><b id="sVal"></b></div>
+<div class="field"><span>Current Rep started at</span><b id="sStart"></b></div>
+</div>
+<div class="changed" id="sChanged"></div>
+</div>
+
+<div class="card">
+<h2>Guided walkthroughs</h2>
+<div class="tabs" id="tabs"></div>
+<p id="scDesc"></p>
+<div class="steps" id="scSteps"></div>
+</div>
+</main>
+
+<script>
+/* ===== Portable logic: the Rep counter. No DOM. Liftable into backend.py. =====
+   Readings arrive one per analysed frame; higher reading = arms further up.
+   States: waiting -> up -> pulling -> pulled -> returning -> up (Rep counted). */
+const RepCounter = {
+  create(cfg) {
+    return { cfg, state: "waiting", reps: 0, recent: [], repStart: null, pulledAt: null, value: null, missing: 0, lastRep: null };
+  },
+  // feed(counter, frame, reading|null) -> { counter, event }  (pure: returns a new counter)
+  feed(c, frame, reading) {
+    const n = { ...c, recent: c.recent.slice(), lastRep: null };
+    if (reading == null) { n.missing = c.missing + 1; return { counter: n, event: "no person: state kept" }; }
+    n.missing = 0;
+    n.recent.push(reading); if (n.recent.length > c.cfg.smooth) n.recent.shift();
+    const v = n.recent.reduce((a, b) => a + b, 0) / n.recent.length;
+    n.value = v;
+    const { top, bottom } = c.cfg;
+    let event = null;
+    switch (c.state) {
+      case "waiting":   if (v >= top) { n.state = "up"; event = "arms up: ready for the first Rep"; } break;
+      case "up":        if (v < top) { n.state = "pulling"; n.repStart = frame; event = "arms left the top: a Rep may be starting"; } break;
+      case "pulling":   if (v >= top) { n.state = "up"; n.repStart = null; event = "went back up before reaching the bottom: not a Rep"; }
+                        else if (v <= bottom) { n.state = "pulled"; n.pulledAt = frame; event = "reached the bottom"; } break;
+      case "pulled":    if (v > bottom) { n.state = "returning"; event = "arms going back up"; } break;
+      case "returning": if (v <= bottom) { n.state = "pulled"; event = "dipped to the bottom again: same Rep"; }
+                        else if (v >= top) { n.state = "up"; n.reps = c.reps + 1; n.lastRep = { start: c.repStart, bottom: c.pulledAt, end: frame }; n.repStart = null; event = `Rep ${n.reps} counted`; } break;
+    }
+    return { counter: n, event };
+  },
+};
+/* ===== end of portable logic ===== */
+
+const CLIPS = /*__CLIPS__*/null;
+const PRESETS = { wrist: { top: 0.75, bot: 0.35, min: -0.3, max: 1.4, step: 0.01, unit: " torso", fmt: v => v.toFixed(2) },
+                  elbow: { top: 150, bot: 90, min: 0, max: 180, step: 1, unit: "°", fmt: v => v.toFixed(0) } };
+const expected = name => (name.includes("idle") || name === "no-person") ? 0 : 8;
+const label = { correct: "correct", "behind-neck": "bar behind the neck", tilted: "torso leaning", mix: "mixed (Reps 3 & 6 leaning)", idle: "sitting still, no Reps", "no-person": "empty frame" };
+const order = ["side", "oblique", "front", "no"];
+const names = Object.keys(CLIPS).sort((a, b) => order.indexOf(a.split("_")[0].split("-")[0]) - order.indexOf(b.split("_")[0].split("-")[0]) || a.localeCompare(b));
+
+const $ = id => document.getElementById(id);
+const ui = { signal: "wrist", top: 0.75, bot: 0.35, smooth: 0.15, skip: 1, clip: "side_correct", pos: 0 };
+
+// smoothing is set in seconds; the counter receives it as a number of readings at the current frame rate
+function cfg() { return { top: ui.top, bottom: ui.bot, smooth: Math.max(1, Math.round(ui.smooth * 30 / ui.skip)) }; }
+function readings(name) { return CLIPS[name][ui.signal]; }
+function analysedFrames(name) { const r = readings(name), out = []; for (let i = 0; i < r.length; i += ui.skip) out.push(i); return out; }
+
+// run the whole clip; return trace + every counter snapshot
+function run(name) {
+  const r = readings(name), frames = analysedFrames(name);
+  let c = RepCounter.create(cfg());
+  const snaps = [], reps = [];
+  for (const f of frames) {
+    const { counter, event } = RepCounter.feed(c, f, r[f]);
+    c = counter; snaps.push({ frame: f, c, event });
+    if (c.lastRep) reps.push(c.lastRep);
+  }
+  return { snaps, reps, total: c.reps };
+}
+
+function renderScore() {
+  const tb = $("score").querySelector("tbody"); tb.innerHTML = "";
+  let good = 0, sideGood = 0, sideN = 0;
+  for (const n of names) {
+    const got = run(n).total, exp = expected(n), ok = got === exp;
+    const [pos, ...rest] = n.split("_"); const clip = rest.join("_") || n;
+    if (ok) good++; if (pos === "side") { sideN++; if (ok) sideGood++; }
+    const tr = document.createElement("tr"); tr.className = "clip" + (n === ui.clip ? " sel" : "");
+    tr.innerHTML = `<td>${pos === "no-person" ? "any" : pos}</td><td>${label[clip] || clip}</td><td>${exp}</td><td>${got}</td><td class="${ok ? "ok" : "bad"}">${ok ? "right" : "wrong"}</td>`;
+    tr.onclick = () => { ui.clip = n; ui.pos = 0; renderAll(); };
+    tb.appendChild(tr);
+  }
+  $("summary").innerHTML = `<b>${good} of ${names.length}</b> clips counted exactly right. Side view (the decided position): <b>${sideGood} of ${sideN}</b>.`;
+}
+
+function renderClip() {
+  const p = PRESETS[ui.signal], { snaps, reps } = run(ui.clip), fps = CLIPS[ui.clip].fps;
+  const [pos, ...rest] = ui.clip.split("_");
+  $("clipTitle").textContent = `Clip: ${pos === "no-person" ? "" : pos + " view, "}${label[rest.join("_")] || label[ui.clip] || ui.clip}`;
+  const len = CLIPS[ui.clip][ui.signal].length, W = 1000, H = 270, pad = 30;
+  const x = f => pad + (W - 2 * pad) * f / Math.max(1, len - 1);
+  const y = v => H - pad - (H - 2 * pad) * (Math.min(p.max, Math.max(p.min, v)) - p.min) / (p.max - p.min);
+  let s = "";
+  reps.forEach((r, i) => { s += `<rect x="${x(r.start)}" y="${pad}" width="${x(r.end) - x(r.start)}" height="${H - 2 * pad}" fill="var(--rep)"/><text x="${(x(r.start) + x(r.end)) / 2}" y="${pad - 8}" text-anchor="middle" font-size="13" fill="var(--accent)">${i + 1}</text>`; });
+  for (const [v, t] of [[ui.top, "up"], [ui.bot, "pulled"]]) s += `<line x1="${pad}" x2="${W - pad}" y1="${y(v)}" y2="${y(v)}" stroke="var(--muted)" stroke-dasharray="5 4"/><text x="${W - pad}" y="${y(v) - 4}" text-anchor="end" font-size="12" fill="var(--muted)">${t} line</text>`;
+  let d = "", pen = false;
+  for (const sn of snaps) { if (sn.c.value == null || sn.event === "no person: state kept") { pen = false; continue; } d += (pen ? "L" : "M") + x(sn.frame).toFixed(1) + " " + y(sn.c.value).toFixed(1); pen = true; }
+  s += `<path d="${d}" fill="none" stroke="var(--ink)" stroke-width="1.5"/>`;
+  const cur = snaps[Math.min(ui.pos, snaps.length - 1)];
+  if (cur) s += `<line x1="${x(cur.frame)}" x2="${x(cur.frame)}" y1="${pad}" y2="${H - pad}" stroke="var(--bad)" stroke-width="1.5"/>`;
+  s += `<text x="${pad}" y="${H - 8}" font-size="12" fill="var(--muted)">0 s</text><text x="${W - pad}" y="${H - 8}" text-anchor="end" font-size="12" fill="var(--muted)">${(len / fps).toFixed(0)} s</text>`;
+  $("chart").innerHTML = s;
+  $("scrub").max = snaps.length - 1; $("scrub").value = ui.pos;
+  const words = { waiting: "not up yet (Set just started)", up: "up", pulling: "pulling down", pulled: "pulled (at the bottom)", returning: "going back up" };
+  const c = cur ? cur.c : RepCounter.create(cfg());
+  $("sState").textContent = words[c.state];
+  $("sReps").textContent = c.reps;
+  $("sVal").textContent = c.value == null ? "no person" : p.fmt(c.value) + p.unit;
+  $("sStart").textContent = c.repStart == null ? "—" : (c.repStart / fps).toFixed(1) + " s";
+  $("timeV").textContent = cur ? (cur.frame / fps).toFixed(1) + " s" : "";
+  $("sChanged").textContent = cur && cur.event ? "Just now: " + cur.event + "." : "Nothing changed on this reading.";
+}
+
+function renderControls() {
+  const p = PRESETS[ui.signal];
+  for (const k of ["top", "bot"]) { Object.assign($(k), { min: p.min, max: p.max, step: p.step }); $(k).value = ui[k]; $(k + "V").textContent = p.fmt(ui[k]) + p.unit; }
+  $("signal").value = ui.signal; $("win").value = ui.smooth; $("winV").textContent = ui.smooth.toFixed(2);
+  $("fps").value = ui.skip; $("fpsV").textContent = Math.round(30 / ui.skip);
+}
+function renderAll() { renderControls(); renderScore(); renderClip(); }
+
+$("signal").onchange = e => { ui.signal = e.target.value; ui.top = PRESETS[ui.signal].top; ui.bot = PRESETS[ui.signal].bot; ui.pos = 0; renderAll(); };
+$("top").oninput = e => { ui.top = +e.target.value; renderAll(); };
+$("bot").oninput = e => { ui.bot = +e.target.value; renderAll(); };
+$("win").oninput = e => { ui.smooth = +e.target.value; renderAll(); };
+$("fps").onchange = e => { ui.skip = +e.target.value; ui.pos = 0; renderAll(); };
+$("scrub").oninput = e => { ui.pos = +e.target.value; renderClip(); };
+
+const snapsNow = () => run(ui.clip).snaps;
+const act = {
+  reset: () => { ui.pos = 0; },
+  frame: () => { ui.pos = Math.min(ui.pos + 1, snapsNow().length - 1); },
+  second: () => { ui.pos = Math.min(ui.pos + Math.round(30 / ui.skip), snapsNow().length - 1); },
+  nextRep: () => { const sn = snapsNow(), r0 = sn[ui.pos].c.reps; let i = ui.pos + 1; while (i < sn.length - 1 && sn[i].c.reps === r0) i++; ui.pos = i; },
+  end: () => { ui.pos = snapsNow().length - 1; },
+};
+$("bReset").onclick = () => { act.reset(); renderClip(); };
+$("bFrame").onclick = () => { act.frame(); renderClip(); };
+$("bSecond").onclick = () => { act.second(); renderClip(); };
+$("bNextRep").onclick = () => { act.nextRep(); renderClip(); };
+$("bEnd").onclick = () => { act.end(); renderClip(); };
+
+const base = { signal: "wrist", top: 0.75, bot: 0.35, smooth: 0.15, skip: 1, pos: 0 };
+const SCENARIOS = [
+  { tab: "Happy path", start: { ...base, clip: "side_correct" },
+    desc: "Side view, eight clean Reps. Watch the arms go up, then pulling, then pulled, then back up. The count only goes up when the arms are back above the top line.",
+    steps: [["Play to the first Rep", "nextRep"], ["Play to the second Rep", "nextRep"], ["Play to the end (expect 8)", "end"]] },
+  { tab: "Sitting still", start: { ...base, clip: "side_idle" },
+    desc: "The user sits at the start position with their arms up and doesn't move. Nothing should be counted, and the arms should never leave the top.",
+    steps: [["Forward 1 second", "second"], ["Forward 1 second", "second"], ["Play to the end (expect 0)", "end"]] },
+  { tab: "Leaning Reps still count", start: { ...base, clip: "side_mix" },
+    desc: "Reps 3 and 6 are done with the torso leaning back. They are still Reps. Whether they are correct is a separate check (torso leaning), not the counter's job.",
+    steps: [["Play to Rep 1", "nextRep"], ["Play to Rep 2", "nextRep"], ["Play to Rep 3 (leaning)", "nextRep"], ["Play to the end (expect 8)", "end"]] },
+  { tab: "Lines too strict", start: { ...base, top: 0.85, bot: 0.25, clip: "side_correct" },
+    desc: "Same clip with stricter lines: arms must go higher and pull lower. Side-on, the wrists only reach about 0.9 torso lengths at the top, so Reps start getting missed. This shows how much margin the defaults have.",
+    steps: [["Play to the end (expect 8, see what you get)", "end"]] },
+  { tab: "Slow phone", start: { ...base, skip: 6, clip: "side_correct" },
+    desc: "The phone can only analyse 5 frames per second, a pessimistic mid-range case. Does the count survive?",
+    steps: [["Play to the end (expect 8)", "end"]] },
+  { tab: "Elbow angle, side view", start: { ...base, signal: "elbow", top: 150, bot: 90, clip: "side_correct" },
+    desc: "The other candidate signal. Side-on, the forearm and upper arm overlap in the picture, so the angle jumps around. Compare the trace with the wrist-height one.",
+    steps: [["Play to the end (expect 8)", "end"]] },
+];
+let curTab = 0;
+function renderTabs() {
+  $("tabs").innerHTML = "";
+  SCENARIOS.forEach((sc, i) => { const b = document.createElement("button"); b.textContent = sc.tab; if (i === curTab) b.className = "active"; b.onclick = () => startScenario(i); $("tabs").appendChild(b); });
+  const sc = SCENARIOS[curTab]; $("scDesc").textContent = sc.desc; $("scSteps").innerHTML = "";
+  const b0 = document.createElement("button"); b0.textContent = "Set up this scenario"; b0.className = "primary"; b0.onclick = () => startScenario(curTab); $("scSteps").appendChild(b0);
+  sc.steps.forEach(([t, a], i) => { const b = document.createElement("button"); b.textContent = `${i + 1}. ${t}`; b.onclick = () => { act[a](); b.classList.add("done"); renderClip(); }; $("scSteps").appendChild(b); });
+}
+function startScenario(i) { curTab = i; Object.assign(ui, SCENARIOS[i].start); renderTabs(); renderAll(); }
+renderTabs(); renderAll();
+</script>
+</body>
+</html>
