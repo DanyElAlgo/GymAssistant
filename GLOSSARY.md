@@ -15,7 +15,7 @@ One full cycle of an Exercise's movement, from the start position through the wo
 _Avoid_: Repetition count, cycle
 
 **Set**:
-A continuous run of Reps of one Exercise, from when the user starts until they stop.
+A continuous run of Reps of one Exercise, from when the user starts it until they stop it. Only completed Reps belong to it; a Set with no Reps is not kept.
 _Avoid_: Series, round
 
 **Session**:
